@@ -3,14 +3,14 @@
 import React, { useState, useEffect } from 'react';
 import { db, initStats, MicroStep } from '@/lib/db'; 
 import { useLiveQuery } from 'dexie-react-hooks';
-import { decomposeTask } from '@/lib/ollama'; 
+import { streamDecomposeTask } from '@/lib/ollama'; 
 import VoiceInput from './VoiceInput';
 import GamificationBar from './GamificationBar';
 import FocusMode from './FocusMode'; 
 import { speak } from '@/lib/voice-companion';
 import { 
   Sparkles, Play, Loader2, Maximize2, 
-  Clock, Zap, RotateCcw, Trash2
+  RotateCcw, Trash2, Eye, Type
 } from 'lucide-react';
 
 export default function TaskDashboard() {
@@ -19,7 +19,7 @@ export default function TaskDashboard() {
   const [steps, setSteps] = useState<MicroStep[]>([]);
   const [isFocusMode, setIsFocusMode] = useState(false);
 
-  // 1. Fetch History & Stats
+  // DB Data
   const tasks = useLiveQuery(() => db.tasks.toArray());
   const stats = useLiveQuery(() => db.userStats.get(1));
 
@@ -28,20 +28,27 @@ export default function TaskDashboard() {
   const handleDecompose = async () => {
     if (!input.trim()) return;
     setLoading(true);
+    setSteps([]); 
+    
     try {
-      const result = await decomposeTask(input);
+      const finalSteps = await streamDecomposeTask(input, (partialSteps) => {
+        setSteps(partialSteps); 
+      });
+
+      if (finalSteps && finalSteps.length > 0) {
+        setSteps(finalSteps);
+      }
       
       await db.tasks.add({
         title: input,
         createdAt: new Date(),
         completed: false,
         // @ts-ignore
-        steps: result.map(s => ({ ...s, completed: false }))
+        steps: finalSteps.map(s => ({ ...s, completed: false }))
       });
       
-      setSteps(result);
       if (stats) await updateXP(20);
-      setInput(''); // Clear input after generating
+      setInput(''); 
 
     } catch {
       alert("Mock Mode: AI not connected.");
@@ -64,14 +71,50 @@ export default function TaskDashboard() {
     await db.userStats.update(1, { xp: newXp, level: newLevel });
   };
 
-  // Helper to delete history items
+  const toggleDyslexicFont = async () => {
+    if (!stats) return;
+    await db.userStats.update(1, { isDyslexicFont: !stats.isDyslexicFont });
+  };
+
   const handleDelete = async (id?: number) => {
     if (id) await db.tasks.delete(id);
   };
 
+  const fontClass = stats?.isDyslexicFont ? 'font-[family-name:var(--font-lexend)]' : 'font-sans';
+
   return (
-    <div className="max-w-3xl mx-auto w-full space-y-8 p-4">
-      {stats && <GamificationBar xp={stats.xp} level={stats.level} />}
+    <div className={`max-w-3xl mx-auto w-full space-y-8 p-4 ${fontClass}`}>
+      
+      {/* --- NEW HEADER DESIGN: UNIFIED HUD --- */}
+      {/* This wraps everything in a nice white bar so it looks grounded, not floating */}
+      <div className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex flex-col sm:flex-row items-center justify-between gap-6">
+        
+        {/* Left: Gamification Area (Expanded) */}
+        <div className="w-full sm:flex-1">
+             {stats && <GamificationBar xp={stats.xp} level={stats.level} />}
+        </div>
+
+        {/* Right: Tools Divider */}
+        <div className="flex items-center gap-3 w-full sm:w-auto justify-end border-t sm:border-t-0 sm:border-l border-gray-100 pt-4 sm:pt-0 sm:pl-6">
+            <span className="text-xs font-bold text-gray-300 uppercase tracking-widest hidden sm:block">
+                View
+            </span>
+            
+            {/* The Toggle Button (Better Positioned) */}
+            <button
+              onClick={toggleDyslexicFont}
+              className={`p-2 px-4 rounded-lg transition-all flex items-center gap-2 text-sm font-bold border ${
+                stats?.isDyslexicFont 
+                  ? 'bg-blue-600 text-white border-blue-600 shadow-md transform scale-105' 
+                  : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100'
+              }`}
+              title="Toggle Dyslexia-Friendly Font"
+            >
+              <Type size={18} />
+              {stats?.isDyslexicFont ? "Dyslexic" : "Standard"}
+            </button>
+        </div>
+      </div>
 
       {/* INPUT SECTION */}
       <div className="bg-white p-6 rounded-2xl shadow-xl border border-gray-100">
@@ -95,7 +138,7 @@ export default function TaskDashboard() {
           <button
             onClick={handleDecompose}
             disabled={loading || !input}
-            className="bg-green-600 text-white px-6 py-3 rounded-xl font-semibold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 transition-all min-w-[150px] justify-center"
+            className="bg-green-600 text-white px-6 py-3 rounded-xl font-semibold hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 transition-all min-w-[150px] justify-center"
           >
             {loading ? <Loader2 className="animate-spin" /> : <Sparkles />}
             {loading ? "Thinking..." : "Break it Down"}
@@ -103,20 +146,38 @@ export default function TaskDashboard() {
         </div>
       </div>
 
-      {/* CURRENT ACTIVE STEPS */}
-      {steps.length > 0 && (
+      {/* ACTIVE RESULTS */}
+      {(steps.length > 0 || loading) && (
         <div className="space-y-4 animate-in slide-in-from-bottom-4 duration-500">
           <div className="flex items-center justify-between">
             <h3 className="text-xl font-bold text-gray-700">Micro-Wins ({steps.length})</h3>
-            <button
-              onClick={() => setIsFocusMode(true)}
-              className="flex items-center gap-2 bg-black text-white px-5 py-2 rounded-full hover:scale-105 transition-transform"
-            >
-              <Play size={16} fill="white" /> Start Focus Mode
-            </button>
+            {steps.length > 0 && (
+              <button
+                onClick={() => setIsFocusMode(true)}
+                className="flex items-center gap-2 bg-black text-white px-5 py-2 rounded-full hover:scale-105 transition-transform shadow-lg"
+              >
+                <Play size={16} fill="white" /> Start Focus Mode
+              </button>
+            )}
           </div>
 
           <div className="grid gap-3">
+            {/* Skeleton */}
+            {loading && steps.length === 0 && (
+              <div className="space-y-3 animate-pulse">
+                {[1, 2, 3].map((i) => (
+                  <div key={i} className="bg-white p-4 rounded-xl border border-gray-100 h-24 flex items-center gap-4">
+                    <div className="h-8 w-8 bg-gray-200 rounded-full"></div>
+                    <div className="flex-1 space-y-2">
+                      <div className="h-4 bg-gray-200 rounded w-3/4"></div>
+                      <div className="h-3 bg-gray-200 rounded w-1/4"></div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Steps */}
             {steps.map((step) => (
               <div 
                 key={step.id} 
@@ -156,7 +217,7 @@ export default function TaskDashboard() {
         </div>
       )}
 
-      {/* --- HISTORY SECTION (RESTORED) --- */}
+      {/* HISTORY */}
       {tasks && tasks.length > 0 && (
         <div className="pt-12 border-t border-gray-200">
           <h3 className="text-sm font-bold text-gray-400 mb-6 uppercase tracking-wider flex items-center gap-2">
@@ -176,11 +237,8 @@ export default function TaskDashboard() {
                 <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                   <button 
                     onClick={() => {
-                        // RE-LOAD LOGIC:
-                        // 1. Load steps into view
                         // @ts-ignore
                         setSteps(task.steps);
-                        // 2. Scroll to top
                         window.scrollTo({ top: 0, behavior: 'smooth' });
                     }}
                     className="text-sm bg-white border border-gray-200 text-green-600 px-3 py-1.5 rounded-lg hover:bg-blue-50 font-medium"
