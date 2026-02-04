@@ -12,8 +12,23 @@ export interface MicroStep {
   energy_required: 'High' | 'Medium' | 'Low';
 }
 
+// Helper to generate persona-specific instructions
+function getPersonaInstructions(neuroType: string = 'General', name: string = 'User') {
+  switch (neuroType) {
+    case 'ADHD':
+      return `User has ADHD. Make steps "Novel" and "Exciting". Use gamified verbs (e.g., "Quest: Open Laptop", "Mission: Find files"). Keep it VERY short and punchy.`;
+    case 'Anxiety':
+      return `User has Anxiety. Be extremely reassuring. The first step must be ridiculously easy (e.g., "Just sit in the chair"). Use calming, low-pressure language.`;
+    case 'Dyslexia':
+      return `User has Dyslexia. Use simple, plain English. No complex sentences. Focus on visual clarity.`;
+    default:
+      return `User needs clear, concrete executive function support. Be direct and logical.`;
+  }
+}
+
 export async function streamDecomposeTask(
   userTask: string, 
+  userProfile: { name?: string, neuroType?: string }, // <--- New Param
   onPartialUpdate: (steps: MicroStep[]) => void
 ): Promise<MicroStep[]> {
   
@@ -21,10 +36,22 @@ export async function streamDecomposeTask(
   const steps: MicroStep[] = [];
   let buffer = ""; 
 
+  // DYNAMIC PROMPT INJECTION
+  // We keep the Modelfile structure (JSON) but inject style guides here.
+  const styleGuide = getPersonaInstructions(userProfile.neuroType, userProfile.name);
+  
+  const finalPrompt = `
+    Task: "${scrubbed}"
+    
+    STYLE GUIDE: ${styleGuide}
+    
+    REMINDER: Output valid JSON only.
+  `;
+
   try {
     const response = await ollama.chat({
       model: 'neuro-coach',
-      messages: [{ role: 'user', content: scrubbed }],
+      messages: [{ role: 'user', content: finalPrompt }],
       stream: true, 
       format: 'json',
     });
@@ -32,30 +59,21 @@ export async function streamDecomposeTask(
     for await (const part of response) {
       buffer += part.message.content;
 
-      // --- FIX: ROBUST REGEX STRATEGY ---
-      // Old Regex failed on spaces (e.g., { "id": 1 }).
-      // New Regex: Finds ANY block between { and } that contains "id".
-      // This handles:
-      // - {"id":1...} (Compact)
-      // - { "id": 1... } (Spaced)
-      // - {\n "id": 1... } (Multiline)
+      // Robust Regex to catch steps live
       const potentialMatches = buffer.match(/\{[^{}]*"id"[^{}]+\}/g);
 
       if (potentialMatches) {
         potentialMatches.forEach(jsonStr => {
-          // Parse candidate
           const newStep = parseStep(jsonStr, map);
-          
-          // If valid AND not already added (dedupe by ID)
           if (newStep && !steps.find(s => s.id === newStep.id)) {
             steps.push(newStep);
-            onPartialUpdate([...steps]); // <--- Update UI INSTANTLY
+            onPartialUpdate([...steps]); 
           }
         });
       }
     }
 
-    // SAFETY NET: If streaming failed completely (0 steps), parse the full buffer
+    // Safety Net
     if (steps.length === 0) {
       try {
         const cleanJson = buffer.replace(/```json|```/g, "").trim();
@@ -79,12 +97,9 @@ export async function streamDecomposeTask(
   }
 }
 
-// Helper to safely parse individual JSON chunks
 function parseStep(jsonStr: string, map: Map<string, string>): MicroStep | null {
   try {
     const step = JSON.parse(jsonStr);
-    
-    // Strict Validation: Must have ID and Text to show up
     if (!step.id || !step.text) return null;
 
     return {
@@ -98,6 +113,7 @@ function parseStep(jsonStr: string, map: Map<string, string>): MicroStep | null 
   }
 }
 
+// Backward compatibility alias
 export const decomposeTask = async (task: string) => {
-    return streamDecomposeTask(task, () => {});
+    return streamDecomposeTask(task, { name: 'User', neuroType: 'General' }, () => {});
 };

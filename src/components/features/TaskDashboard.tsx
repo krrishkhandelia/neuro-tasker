@@ -1,45 +1,80 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { db, initStats, MicroStep } from '@/lib/db'; 
+import { db, MicroStep } from '@/lib/db'; 
 import { useLiveQuery } from 'dexie-react-hooks';
 import { streamDecomposeTask } from '@/lib/ollama'; 
 import VoiceInput from './VoiceInput';
 import GamificationBar from './GamificationBar';
 import FocusMode from './FocusMode'; 
+import Onboarding from './Onboarding'; 
+import ProfileSelector from './ProfileSelector'; 
 import { speak } from '@/lib/voice-companion';
 import { 
   Sparkles, Play, Loader2, Maximize2, 
-  RotateCcw, Trash2, Eye, Type
+  RotateCcw, Trash2, Type, LogOut
 } from 'lucide-react';
 
 export default function TaskDashboard() {
+  const [activeUserId, setActiveUserId] = useState<number | null>(null);
+  const [isCreatingNew, setIsCreatingNew] = useState(false);
+
+  // DASHBOARD STATE
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [steps, setSteps] = useState<MicroStep[]>([]);
   const [isFocusMode, setIsFocusMode] = useState(false);
 
-  // DB Data
-  const tasks = useLiveQuery(() => db.tasks.toArray());
-  const stats = useLiveQuery(() => db.userStats.get(1));
+  // QUERIES
+  const allProfiles = useLiveQuery(() => db.userStats.toArray());
+  
+  const currentUser = useLiveQuery(
+    async () => {
+      return activeUserId ? await db.userStats.get(activeUserId) : undefined;
+    },
+    [activeUserId]
+  );
 
-  useEffect(() => { initStats(); }, []);
+  const userTasks = useLiveQuery(
+    () => activeUserId ? db.tasks.where('userId').equals(activeUserId).toArray() : [],
+    [activeUserId]
+  );
+
+  useEffect(() => { 
+    // No-op for now, initStats handled by onboarding
+  }, []);
+
+  // --- HANDLERS ---
+
+  const handleDeleteProfile = async (id: number) => {
+    // 1. Delete User
+    await db.userStats.delete(id);
+    // 2. Delete ALL their tasks (Clean up)
+    const tasksToDelete = await db.tasks.where('userId').equals(id).primaryKeys();
+    await db.tasks.bulkDelete(tasksToDelete);
+  };
 
   const handleDecompose = async () => {
-    if (!input.trim()) return;
+    if (!input.trim() || !activeUserId || !currentUser) return;
     setLoading(true);
     setSteps([]); 
     
     try {
-      const finalSteps = await streamDecomposeTask(input, (partialSteps) => {
-        setSteps(partialSteps); 
-      });
+      // PASS PROFILE DATA TO AI HERE
+      const finalSteps = await streamDecomposeTask(
+        input, 
+        { name: currentUser.name, neuroType: currentUser.neuroType }, // <--- CUSTOMIZATION
+        (partialSteps) => {
+          setSteps(partialSteps); 
+        }
+      );
 
       if (finalSteps && finalSteps.length > 0) {
         setSteps(finalSteps);
       }
       
       await db.tasks.add({
+        userId: activeUserId,
         title: input,
         createdAt: new Date(),
         completed: false,
@@ -47,7 +82,7 @@ export default function TaskDashboard() {
         steps: finalSteps.map(s => ({ ...s, completed: false }))
       });
       
-      if (stats) await updateXP(20);
+      if (currentUser) await updateXP(20);
       setInput(''); 
 
     } catch {
@@ -58,75 +93,111 @@ export default function TaskDashboard() {
   };
 
   const updateXP = async (amount: number) => {
-    if (!stats) return;
-    let newXp = stats.xp + amount;
-    let newLevel = stats.level;
-    const required = stats.level * 100;
+    if (!currentUser || !activeUserId) return;
+    let newXp = currentUser.xp + amount;
+    let newLevel = currentUser.level;
+    const required = currentUser.level * 100;
     
     if (newXp >= required) {
       newXp = newXp - required;
       newLevel += 1;
-      speak("Congratulations! You leveled up!");
+      speak(`Way to go ${currentUser.name}! You leveled up!`);
     }
-    await db.userStats.update(1, { xp: newXp, level: newLevel });
+    await db.userStats.update(activeUserId, { xp: newXp, level: newLevel });
   };
 
   const toggleDyslexicFont = async () => {
-    if (!stats) return;
-    await db.userStats.update(1, { isDyslexicFont: !stats.isDyslexicFont });
+    if (!currentUser || !activeUserId) return;
+    await db.userStats.update(activeUserId, { isDyslexicFont: !currentUser.isDyslexicFont });
   };
 
-  const handleDelete = async (id?: number) => {
+  const handleDeleteTask = async (id?: number) => {
     if (id) await db.tasks.delete(id);
   };
 
-  const fontClass = stats?.isDyslexicFont ? 'font-[family-name:var(--font-lexend)]' : 'font-sans';
+  const handleLogout = () => {
+    setSteps([]);
+    setInput('');
+    setActiveUserId(null); 
+  };
+
+  // --- VIEW LOGIC ---
+
+  if (!allProfiles) return null;
+
+  if (isCreatingNew) {
+    return <Onboarding onComplete={(newId) => {
+      setIsCreatingNew(false);
+      setActiveUserId(newId);
+    }} />;
+  }
+
+  if (!activeUserId) {
+    return (
+      <ProfileSelector 
+        profiles={allProfiles} 
+        onSelectProfile={setActiveUserId}
+        onCreateNew={() => setIsCreatingNew(true)}
+        onDeleteProfile={handleDeleteProfile} // <--- Connected
+      />
+    );
+  }
+
+  const fontClass = currentUser?.isDyslexicFont ? 'font-[family-name:var(--font-lexend)]' : 'font-sans';
 
   return (
     <div className={`max-w-3xl mx-auto w-full space-y-8 p-4 ${fontClass}`}>
       
-      {/* --- NEW HEADER DESIGN: UNIFIED HUD --- */}
-      {/* This wraps everything in a nice white bar so it looks grounded, not floating */}
+      {/* HEADER */}
       <div className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex flex-col sm:flex-row items-center justify-between gap-6">
         
-        {/* Left: Gamification Area (Expanded) */}
+        {/* Left: User Info */}
         <div className="w-full sm:flex-1">
-             {stats && <GamificationBar xp={stats.xp} level={stats.level} />}
+             <div className="mb-2 pl-1 flex justify-between items-center">
+                <div>
+                  <span className="text-gray-400 text-xs font-bold uppercase tracking-wider">Welcome,</span>
+                  <h3 className="text-xl font-bold text-gray-800">
+                    {currentUser?.name} <span className="text-gray-300 text-sm font-normal">({currentUser?.neuroType})</span>
+                  </h3>
+                </div>
+             </div>
+             {currentUser && <GamificationBar xp={currentUser.xp} level={currentUser.level} />}
         </div>
 
-        {/* Right: Tools Divider */}
+        {/* Right: Controls */}
         <div className="flex items-center gap-3 w-full sm:w-auto justify-end border-t sm:border-t-0 sm:border-l border-gray-100 pt-4 sm:pt-0 sm:pl-6">
-            <span className="text-xs font-bold text-gray-300 uppercase tracking-widest hidden sm:block">
-                View
-            </span>
-            
-            {/* The Toggle Button (Better Positioned) */}
             <button
               onClick={toggleDyslexicFont}
               className={`p-2 px-4 rounded-lg transition-all flex items-center gap-2 text-sm font-bold border ${
-                stats?.isDyslexicFont 
+                currentUser?.isDyslexicFont 
                   ? 'bg-blue-600 text-white border-blue-600 shadow-md transform scale-105' 
                   : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100'
               }`}
               title="Toggle Dyslexia-Friendly Font"
             >
               <Type size={18} />
-              {stats?.isDyslexicFont ? "Dyslexic" : "Standard"}
+            </button>
+
+            <button
+              onClick={handleLogout}
+              className="p-2 px-3 rounded-lg bg-gray-50 text-gray-400 border border-gray-200 hover:bg-red-50 hover:text-red-500 hover:border-red-200 transition-all"
+              title="Switch Profile"
+            >
+              <LogOut size={18} />
             </button>
         </div>
       </div>
 
-      {/* INPUT SECTION */}
+      {/* INPUT */}
       <div className="bg-white p-6 rounded-2xl shadow-xl border border-gray-100">
         <h2 className="text-2xl font-bold text-gray-800 mb-4">What's overwhelming you?</h2>
-        
         <div className="flex gap-3">
           <div className="relative flex-1">
             <input
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="e.g., Clean my messy room..."
+              placeholder={`e.g., Clean my messy room...`}
               className="w-full pl-4 pr-12 py-4 text-lg bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-green-500 focus:outline-none transition-all"
               onKeyDown={(e) => e.key === 'Enter' && handleDecompose()}
             />
@@ -134,7 +205,6 @@ export default function TaskDashboard() {
               <VoiceInput onTranscript={setInput} />
             </div>
           </div>
-          
           <button
             onClick={handleDecompose}
             disabled={loading || !input}
@@ -160,9 +230,7 @@ export default function TaskDashboard() {
               </button>
             )}
           </div>
-
           <div className="grid gap-3">
-            {/* Skeleton */}
             {loading && steps.length === 0 && (
               <div className="space-y-3 animate-pulse">
                 {[1, 2, 3].map((i) => (
@@ -176,13 +244,8 @@ export default function TaskDashboard() {
                 ))}
               </div>
             )}
-
-            {/* Steps */}
             {steps.map((step) => (
-              <div 
-                key={step.id} 
-                className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between hover:shadow-md transition-shadow group"
-              >
+              <div key={step.id} className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between hover:shadow-md transition-shadow group">
                 <div className="flex items-center gap-4">
                   <div className="h-8 w-8 rounded-full bg-blue-100 text-green-600 flex items-center justify-center font-bold text-sm">
                     {step.id}
@@ -202,7 +265,6 @@ export default function TaskDashboard() {
                     )}
                   </div>
                 </div>
-                
                 <div className="flex items-center gap-3">
                     <span className="text-sm text-gray-400 font-mono bg-gray-50 px-2 py-1 rounded">
                         {step.duration}
@@ -218,14 +280,13 @@ export default function TaskDashboard() {
       )}
 
       {/* HISTORY */}
-      {tasks && tasks.length > 0 && (
+      {userTasks && userTasks.length > 0 && (
         <div className="pt-12 border-t border-gray-200">
           <h3 className="text-sm font-bold text-gray-400 mb-6 uppercase tracking-wider flex items-center gap-2">
             <RotateCcw size={16} /> Previous Sessions
           </h3>
-          
           <div className="space-y-3">
-            {tasks.map((task) => (
+            {userTasks.map((task) => (
               <div key={task.id} className="bg-gray-50 hover:bg-white p-4 rounded-xl border border-transparent hover:border-gray-200 transition-all flex justify-between items-center group">
                 <div>
                   <h4 className="font-semibold text-gray-700">{task.title}</h4>
@@ -233,7 +294,6 @@ export default function TaskDashboard() {
                     {task.createdAt.toLocaleDateString()} • {task.steps.length} steps
                   </span>
                 </div>
-                
                 <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                   <button 
                     onClick={() => {
@@ -257,7 +317,7 @@ export default function TaskDashboard() {
                     <Maximize2 size={16} />
                   </button>
                   <button 
-                    onClick={() => handleDelete(task.id)}
+                    onClick={() => handleDeleteTask(task.id)}
                     className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
                     title="Delete"
                   >
@@ -270,7 +330,7 @@ export default function TaskDashboard() {
         </div>
       )}
 
-      {/* FOCUS MODE OVERLAY */}
+      {/* FOCUS MODE */}
       {isFocusMode && (
         <FocusMode 
           steps={steps} 

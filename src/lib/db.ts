@@ -9,6 +9,7 @@ export interface MicroStep {
 
 export interface Task {
   id?: number;
+  userId: number; // <--- NEW: Links task to a specific profile
   title: string;
   createdAt: Date;
   completed: boolean;
@@ -19,7 +20,9 @@ export interface UserStats {
   id?: number;
   xp: number;
   level: number;
-  isDyslexicFont?: boolean; // NEW: Store font preference
+  isDyslexicFont?: boolean;
+  name?: string; 
+  neuroType?: string;
 }
 
 class NeuroTaskerDB extends Dexie {
@@ -28,10 +31,10 @@ class NeuroTaskerDB extends Dexie {
 
   constructor() {
     super('NeuroTaskerDB');
-    // Bump version to 3 for the new field
-    this.version(3).stores({
-      tasks: '++id, title, createdAt, completed',
-      userStats: '++id, xp, level, isDyslexicFont'
+    // Bump version to 5 to add 'userId' index
+    this.version(5).stores({
+      tasks: '++id, userId, title, createdAt, completed',
+      userStats: '++id, xp, level, isDyslexicFont, name, neuroType'
     });
   }
 }
@@ -39,9 +42,6 @@ class NeuroTaskerDB extends Dexie {
 export const db = new NeuroTaskerDB();
 
 export async function initStats() {
-  const exists = await db.userStats.get(1);
-  if (!exists) {
-    // Default to standard font (false)
-    await db.userStats.add({ id: 1, xp: 0, level: 1, isDyslexicFont: false });
-  }
+  // We no longer force-create a user here. 
+  // We let the Profile Selector handle creation.
 }
