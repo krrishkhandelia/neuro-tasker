@@ -1,10 +1,8 @@
+/* TAILWIND V4 IMPORT */
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
+/* 1. THEME CONFIGURATION (From your original code) */
+/* This connects Tailwind to your Next.js variables */
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -12,6 +10,17 @@
   --font-mono: var(--font-geist-mono);
 }
 
+/* 2. VARIABLES */
+:root {
+  /* Polished "SaaS" Light Mode (Slate-50 instead of harsh White) */
+  --background: #f8fafc;
+  --foreground: #1e293b;
+  
+  /* Your Font Variables (Ensure these are set in layout.tsx) */
+  /* If they fail, we have a fallback stack in body below */
+}
+
+/* Optional: Dark Mode Support (Preserved from your code) */
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;
@@ -19,8 +28,63 @@
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* 3. THE CANVAS */
+@layer base {
+  body {
+    color: var(--foreground);
+    background: var(--background);
+    
+    /* PRIMARY CHANGE: Use the mapped Theme Font first, then fallbacks */
+    font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+    
+    /* Premium Mesh Gradient Background */
+    background-image: 
+      radial-gradient(at 0% 0%, hsla(253,16%,7%,0) 0, transparent 50%), 
+      radial-gradient(at 50% 0%, hsla(225,39%,30%,0) 0, transparent 50%), 
+      radial-gradient(at 100% 0%, hsla(339,49%,30%,0) 0, transparent 50%);
+    
+    min-height: 100vh;
+    
+    /* Font Smoothing for crisp text */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* 4. UTILITIES */
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  
+  .transition-all {
+    transition-duration: 300ms;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  }
+}
+
+/* 5. CUSTOM SCROLLBAR */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1; /* Slate-300 */
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8; /* Slate-400 */
+}
+
+/* 6. ANIMATIONS */
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-in {
+  animation: slideUp 0.4s ease-out forwards;
 }

@@ -12,23 +12,38 @@ export interface MicroStep {
   energy_required: 'High' | 'Medium' | 'Low';
 }
 
-// Helper to generate persona-specific instructions
 function getPersonaInstructions(neuroType: string = 'General', name: string = 'User') {
   switch (neuroType) {
     case 'ADHD':
-      return `User has ADHD. Make steps "Novel" and "Exciting". Use gamified verbs (e.g., "Quest: Open Laptop", "Mission: Find files"). Keep it VERY short and punchy.`;
+      return `Target: ADHD (Dopamine-seeking).
+      - TONE: Gamified, Urgent.
+      - STRATEGY: Speed-run the planning phase.
+      - EXAMPLE ARCS: "Loot Supplies" -> "Craft Plan" -> "Deploy Invites".
+      - END GOAL: The task must be fully conquered by the last step.`;
+      
     case 'Anxiety':
-      return `User has Anxiety. Be extremely reassuring. The first step must be ridiculously easy (e.g., "Just sit in the chair"). Use calming, low-pressure language.`;
+      return `Target: Anxiety (Overwhelm).
+      - TONE: Warm, collaborative Body Double.
+      - STRATEGY: Start with comfort (Low Energy), move to doing (Medium), finish with relief (Completion).
+      - CRITICAL: Do not leave them hanging. Guide them to the very end so they feel safe.
+      - EXAMPLE: "Get tea" -> "Open app" -> "Pick date" -> "Send invites" -> "Close laptop".`;
+      
     case 'Dyslexia':
-      return `User has Dyslexia. Use simple, plain English. No complex sentences. Focus on visual clarity.`;
+      return `Target: Dyslexia (Visual).
+      - TONE: Ultra-concise.
+      - STRATEGY: Linear visual timeline.
+      - RULE: 7-12 steps. Subject-Verb-Object. Cover the whole task.`;
+      
     default:
-      return `User needs clear, concrete executive function support. Be direct and logical.`;
+      return `Target: General Productivity.
+      - TONE: Logical, Chronological.
+      - STRATEGY: Beginning, Middle, End. Ensure the final step completes the user's intent.`;
   }
 }
 
 export async function streamDecomposeTask(
   userTask: string, 
-  userProfile: { name?: string, neuroType?: string }, // <--- New Param
+  userProfile: { name?: string, neuroType?: string }, 
   onPartialUpdate: (steps: MicroStep[]) => void
 ): Promise<MicroStep[]> {
   
@@ -36,21 +51,24 @@ export async function streamDecomposeTask(
   const steps: MicroStep[] = [];
   let buffer = ""; 
 
-  // DYNAMIC PROMPT INJECTION
-  // We keep the Modelfile structure (JSON) but inject style guides here.
   const styleGuide = getPersonaInstructions(userProfile.neuroType, userProfile.name);
   
   const finalPrompt = `
-    Task: "${scrubbed}"
+    TASK: "${scrubbed}"
     
-    STYLE GUIDE: ${styleGuide}
+    STYLE GUIDE: 
+    ${styleGuide}
     
-    REMINDER: Output valid JSON only.
+    INSTRUCTIONS:
+    1. BREAKDOWN: Create a complete roadmap from start to finish.
+    2. LENGTH: 7 to 15 steps (use more steps for complex tasks like "planning a party").
+    3. COMPLETION: The final step must result in the task being DONE.
+    4. FORMAT: JSON only. Keys: "id", "text", "duration", "energy_required".
   `;
 
   try {
     const response = await ollama.chat({
-      model: 'neuro-coach',
+      model: 'neuro-coach', 
       messages: [{ role: 'user', content: finalPrompt }],
       stream: true, 
       format: 'json',
@@ -58,10 +76,7 @@ export async function streamDecomposeTask(
 
     for await (const part of response) {
       buffer += part.message.content;
-
-      // Robust Regex to catch steps live
       const potentialMatches = buffer.match(/\{[^{}]*"id"[^{}]+\}/g);
-
       if (potentialMatches) {
         potentialMatches.forEach(jsonStr => {
           const newStep = parseStep(jsonStr, map);
@@ -73,27 +88,20 @@ export async function streamDecomposeTask(
       }
     }
 
-    // Safety Net
     if (steps.length === 0) {
       try {
         const cleanJson = buffer.replace(/```json|```/g, "").trim();
         const parsed = JSON.parse(cleanJson);
         const data = Array.isArray(parsed) ? parsed : (parsed.steps || []);
-        
-        const finalSteps = data.map((s: any) => parseStep(JSON.stringify(s), map)).filter(Boolean) as MicroStep[];
-        return finalSteps;
+        return data.map((s: any) => parseStep(JSON.stringify(s), map)).filter(Boolean) as MicroStep[];
       } catch (e) {
         console.error("Final parse failed", e);
       }
     }
-
     return steps;
-
   } catch (error) {
-    console.error("Stream Error:", error);
-    return [
-        { id: 1, text: "Check Ollama connection", duration: "1m", energy_required: "Low" }
-    ];
+    console.error("Ollama Error:", error);
+    return [{ id: 1, text: "Connection Error", duration: "0m", energy_required: "Low" }];
   }
 }
 
@@ -101,7 +109,6 @@ function parseStep(jsonStr: string, map: Map<string, string>): MicroStep | null 
   try {
     const step = JSON.parse(jsonStr);
     if (!step.id || !step.text) return null;
-
     return {
       ...step,
       text: restorePII(step.text, map),
@@ -113,7 +120,6 @@ function parseStep(jsonStr: string, map: Map<string, string>): MicroStep | null 
   }
 }
 
-// Backward compatibility alias
 export const decomposeTask = async (task: string) => {
     return streamDecomposeTask(task, { name: 'User', neuroType: 'General' }, () => {});
 };
